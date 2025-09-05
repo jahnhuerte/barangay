@@ -10,43 +10,46 @@ class RecommendationController extends Controller
 {
     public function index()
     {
-        // Query to get the most used programId
+        // Get top requested programs from residents
         $topPrograms = DB::table('residents')
-        ->select('programId', DB::raw('COUNT(programId) as usage_count'))
-        ->groupBy('programId')
-        ->orderByDesc('usage_count')
+            ->select('programId', DB::raw('COUNT(programId) as usage_count'))
+            ->groupBy('programId')
+            ->orderByDesc('usage_count')
+            ->limit(10)
+            ->get();
+
+        // Get priority-based recommendations based on service requests
+        $priorityPrograms = DB::table('recommendations')
+        ->leftJoin('blotters', 'recommendations.programId', '=', 'blotters.programId')
+         ->leftJoin('clearances', 'recommendations.programId', '=', 'clearances.programId') // REMOVE this line
+        ->leftJoin('medical_requests', 'recommendations.programId', '=', 'medical_requests.programId')
+        ->leftJoin('job_applications', 'recommendations.programId', '=', 'job_applications.programId')
+        ->leftJoin('housing_requests', 'recommendations.programId', '=', 'housing_requests.programId')
+        ->leftJoin('financial_assistance', 'recommendations.programId', '=', 'financial_assistance.programId')
+        ->select('recommendations.programId', 'recommendations.programName', 'recommendations.programDescription',
+            'recommendations.priority', DB::raw(
+                'COUNT(blotters.id) * 1.8 + 
+                 COUNT(medical_requests.id) * 2.5 + 
+                 COUNT(job_applications.id) * 1.5 + 
+                 COUNT(housing_requests.id) * 2.0 + 
+                 COUNT(financial_assistance.id) * 1.7 as weighted_request_count'
+            ))
+        ->groupBy('recommendations.programId')
+        ->orderByDesc('weighted_request_count')
         ->limit(10)
         ->get();
+    
 
-    if ($topPrograms->isEmpty()) {
-        return view('recommendation.index', ['message' => 'No programs found.']);
-    }
+        // Merge and prioritize recommendations
+        $mergedPrograms = collect($topPrograms)->merge($priorityPrograms);
+        $mergedPrograms = $mergedPrograms->sortByDesc(function ($program) {
+            return ($program->priority == 'High' ? 3 : ($program->priority == 'Medium' ? 2 : 1)) + ($program->usage_count ?? 0);
+        });
 
-    // Fetch details for each top programId from programtbl and sort by usage_count
-    $programDetails = [];
-    foreach ($topPrograms as $program) {
-        $programDetail = DB::table('recommendations')
-            ->select('programId', 'programName', 'programDescription', 'priority')
-            ->where('programId', $program->programId)
-            ->first();
-
-        if ($programDetail) {
-            $programDetail->usage_count = $program->usage_count;
-            $programDetails[] = $programDetail;
-        }
-    }
-
-    // Sort $programDetails array by usage_count in descending order
-    usort($programDetails, function ($a, $b) {
-        return $b->usage_count <=> $a->usage_count;
-    });
-
-    // Now $programDetails is sorted by highest usage_count first
-
-
-
+        // Dispatch Python script for additional analytics
         RunPythonScript::dispatch();
+
         // Pass the data to the view
-        return view('recommendation.index', ['programDetails' => $programDetails]);
+        return view('re  commendation.index', ['programDetails' => $mergedPrograms]);
     }
 }

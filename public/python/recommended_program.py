@@ -1,86 +1,71 @@
-import numpy as np
-from keras.models import load_model
-import pickle
 import mysql.connector
-import os
-import pandas as pd
-from datetime import datetime
+import pickle
+import numpy as np
+from tensorflow.keras.models import load_model
 
-# Get the current directory of the script
-current_dir = os.path.dirname(os.path.abspath(__file__))
+def get_database_connection():
+    return mysql.connector.connect(
+        host='localhost', user='root', password='', database='barangay_db'
+    )
 
-# Full paths to the model and encoders
-model_path = os.path.join(current_dir, 'rnn_recommendation_model.h5')
-encoders_path = os.path.join(current_dir, 'label_encoders.pkl')
-scaler_path = os.path.join(current_dir, 'scaler.pkl')
-
-model = load_model(model_path)
-
-with open(encoders_path, 'rb') as f:
+# Load pre-trained model and encoders
+model = load_model('rnn_recommendation_model.h5')
+with open('label_encoders.pkl', 'rb') as f:
     label_encoders = pickle.load(f)
-
-with open(scaler_path, 'rb') as f:
+with open('scaler.pkl', 'rb') as f:
     scaler = pickle.load(f)
 
-def calculate_age(birthdate):
-    today = datetime.today()
-    return today.year - birthdate.year - ((today.month, today.day) < (birthdate.month, birthdate.day))
+def get_high_priority_needs(cursor):
+    """Identify barangay needs based on trends in requests and blotter reports."""
+    cursor.execute("""
+        SELECT 'job_fair' AS program, COUNT(*) AS count FROM business_clearances WHERE purpose LIKE '%job%'
+        UNION ALL
+        SELECT 'crime_prevention' AS program, COUNT(*) FROM blotters WHERE status = 'unresolved'
+    """)
+    trends = cursor.fetchall()
+    return {row[0]: row[1] for row in trends if row[1] > 10}  # Set threshold for priority
 
-def preprocess_data_from_db(data):
-    # Encode categorical features
-    for col, le in label_encoders.items():
-        data[col] = le.transform(data[col])
-
-    # Normalize numerical features
-    data['birthday'] = scaler.transform(data[['birthday']])
-
-    # Convert to a NumPy array
-    X = data[['birthday', 'student', 'pwd', 'isOccupation', 'isBeneficiaries']].values
-
-    return X
-
-def recommend_program(new_resident_array):
-    # Get the model's prediction
-    prediction = model.predict(new_resident_array)[0]
-    recommended_program_index = np.argmax(prediction)
-    recommended_program_id = recommended_program_index + 1  # Adjust for 0-based indexing
-
-    return recommended_program_id
-
-# Connect to MySQL database
-conn = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",  # Replace with your MySQL password
-    database="laravel"
-)
-
-if conn.is_connected():
-    query = "SELECT id, birthday, student, pwd, isOccupation, isBeneficiaries FROM residents WHERE programID IS NULL"
-    cursor = conn.cursor()
-    cursor.execute(query)
-    data = cursor.fetchall()
-
-    # Process each row individually
-    for row in data:
-        resident_id = row[0]
-        birthdate = row[1]
-        age = calculate_age(birthdate)
-        resident_data = pd.DataFrame([[age, row[2], row[3], row[4], row[5]]], columns=['birthday', 'student', 'pwd', 'isOccupation', 'isBeneficiaries'])
-        X = preprocess_data_from_db(resident_data)
-        recommended_program_id = recommend_program(X)
-
-        # Convert recommended_program_id to a native Python integer
-        recommended_program_id = int(recommended_program_id)
-
-        print(f"Id: {resident_id}, ProgramId: {recommended_program_id}")
-
-        # Update the database with the recommended program ID
-        update_query = "UPDATE residents SET programID = %s WHERE id = %s"
-        cursor.execute(update_query, (recommended_program_id, resident_id))
-        conn.commit()
-
+def recommend_programs():
+    db = get_database_connection()
+    cursor = db.cursor(dictionary=True)
+    
+    cursor.execute("SELECT * FROM residents WHERE programID IS NULL")
+    residents = cursor.fetchall()
+    
+    priority_needs = get_high_priority_needs(cursor)
+    
+    for resident in residents:
+        features = np.array([[
+            resident['age'],
+            resident['isOccupation'],
+            resident['pwd'],
+            resident['isBeneficiaries']
+        ]])
+        features = scaler.transform(features)
+        prediction = model.predict(features)
+        recommended_program = np.argmax(prediction)
+        
+        if 'job_fair' in priority_needs:
+            recommended_program = 'job_fair'
+        elif 'crime_prevention' in priority_needs:
+            recommended_program = 'crime_prevention'
+        
+        cursor.execute("UPDATE residents SET programID = %s WHERE id = %s", (recommended_program, resident['id']))
+        db.commit()
+        send_notification(resident['id'], recommended_program)
+    
     cursor.close()
-    conn.close()
-else:
-    print("Connection to MySQL database failed")
+    db.close()
+
+def send_notification(resident_id, program):
+    """Send real-time notification to the resident."""
+    db = get_database_connection()
+    cursor = db.cursor()
+    cursor.execute("INSERT INTO notifications (resident_id, message) VALUES (%s, %s)",
+                   (resident_id, f'New recommended program: {program}'))
+    db.commit()
+    cursor.close()
+    db.close()
+
+if __name__ == "__main__":
+    recommend_programs()

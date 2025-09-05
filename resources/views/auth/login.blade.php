@@ -8,7 +8,7 @@
         <div class="col-lg-4 col-md-6 col-12 order-lg-1 min-vh-100 order-2 bg-white">
           <div class="p-4 m-3">
             <img src="{{ asset('../img/brgy-bayog-logo.png') }}" alt="logo" width="100" class="shadow-light rounded-circle mb-5 mt-2">
-            <h4 class="text-dark font-weight-normal"><center>Welcome to <br> <span class="font-weight-bold">Data-Driven Barangay Services Recommendation System </span></h4></center>
+            <h4 class="text-dark font-weight-normal"><center>Welcome to v2<br> <span class="font-weight-bold">Data-Driven Barangay Services Recommendation System </span></h4></center>
             <p class="text-muted">Before you get started, you must login or register if you don't already have an account.</p>
             <form method="POST" action="{{ route('login') }}">
                 @csrf
